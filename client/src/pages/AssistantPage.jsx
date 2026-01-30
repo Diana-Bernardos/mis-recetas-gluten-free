@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import axios from 'axios';
-import { Bot, MessageSquare, Send } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import { Bot, Send, CheckCircle } from 'lucide-react';
 
 const AssistantPage = () => {
   const [query, setQuery] = useState('');
@@ -8,6 +9,7 @@ const AssistantPage = () => {
     { type: 'bot', text: '¡Hola! Soy tu asistente de cocina. Puedo ayudarte a añadir cosas a la lista o sugerirte qué comer hoy. ¡Prueba a escribir "Sugiereme un menú"!' }
   ]);
   const [loading, setLoading] = useState(false);
+  const [toast, setToast] = useState(null);
 
   const handleSend = async (e) => {
     e.preventDefault();
@@ -19,18 +21,28 @@ const AssistantPage = () => {
     setLoading(true);
 
     try {
-      // Simulate small delay for realism
       const res = await axios.post('/api/assistant', { query: userMsg });
       setHistory(prev => [...prev, { type: 'bot', text: res.data.answer }]);
+      
+      if (res.data.action === 'item_added') {
+          setToast('¡Elemento añadido a la lista!');
+          setTimeout(() => setToast(null), 3000);
+      }
     } catch (error) {
-      setHistory(prev => [...prev, { type: 'bot', text: 'Lo siento, he tenido un problema parea pensar. Inténtalo de nuevo.' }]);
+      setHistory(prev => [...prev, { type: 'bot', text: 'Lo siento, he tenido un problema para pensar. Comprueba que Ollama esté funcionando.' }]);
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="max-w-2xl mx-auto py-10 h-[calc(100vh-140px)] flex flex-col">
+    <div className="max-w-2xl mx-auto py-10 h-[calc(100vh-140px)] flex flex-col relative">
+      {toast && (
+          <div className="absolute top-0 left-1/2 transform -translate-x-1/2 bg-green-500 text-white px-4 py-2 rounded-full shadow-lg flex items-center gap-2 animate-bounce z-10">
+              <CheckCircle size={16} /> {toast}
+          </div>
+      )}
+
       <div className="text-center mb-6">
         <div className="bg-white/40 p-6 rounded-full w-24 h-24 mx-auto flex items-center justify-center mb-4 shadow-inner">
            <Bot size={48} className="text-coffee/80" />
@@ -42,8 +54,14 @@ const AssistantPage = () => {
       <div className="glass flex-1 p-4 rounded-2xl border border-white/50 overflow-y-auto mb-4 flex flex-col gap-4">
          {history.map((msg, idx) => (
            <div key={idx} className={`flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div className={`p-3 rounded-2xl max-w-[80%] shadow-sm ${msg.type === 'user' ? 'bg-coffee text-white rounded-tr-none' : 'bg-white text-coffee rounded-tl-none'}`}>
-                 {msg.text}
+              <div className={`p-3 rounded-2xl max-w-[85%] shadow-sm ${msg.type === 'user' ? 'bg-coffee text-white rounded-tr-none' : 'bg-white text-coffee rounded-tl-none'}`}>
+                 {msg.type === 'bot' ? (
+                     <div className="prose prose-sm prose-p:my-1 prose-ul:my-1">
+                        <ReactMarkdown>{msg.text}</ReactMarkdown>
+                     </div>
+                 ) : (
+                     msg.text
+                 )}
               </div>
            </div>
          ))}

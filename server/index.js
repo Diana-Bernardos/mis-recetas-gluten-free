@@ -155,52 +155,81 @@ app.put('/api/shopping-list/:id/check', (req, res) => {
   }
 });
 
-// --- ASSISTANT API ---
+// --- ASSISTANT API WITH OLLAMA ---
 
 app.post('/api/assistant', async (req, res) => {
   const { query } = req.body;
-  const lowerQuery = query.toLowerCase();
   
-  // Logic 1: Add to shopping list
-  if (lowerQuery.includes('compra') || lowerQuery.includes('lista') || lowerQuery.includes('anotar')) {
-      if (lowerQuery.includes('añade') || lowerQuery.includes('implantar') || lowerQuery.includes('pon')) {
-         // Simple extraction logic (naive)
-         const words = query.split(' ');
-         const itemIndex = words.findIndex(w => ['añade', 'pon', 'comprar'].some(k => w.toLowerCase().includes(k)));
-         const item = words.slice(itemIndex + 1).join(' ').replace('a la lista', '').trim();
-         
-         if (item) {
-            const stmt = db.prepare('INSERT INTO shopping_list (item) VALUES (?)');
-            stmt.run(item);
-            return res.json({ answer: `He añadido "${item}" a tu lista de la compra.` });
-         }
-      }
-      return res.json({ answer: 'Puedo gestionar tu lista de la compra. Dime "Añade pan" para empezar.' });
-  }
+  try {
+    // 1. Gather Context
+    const recipes = db.prepare('SELECT title, ingredients FROM recipes').all();
+    const shoppingList = db.prepare('SELECT item FROM shopping_list').all();
+    
+    // Format context for the LLM
+    const recipesContext = recipes.map(r => `- ${r.title} (Ingredientes: ${r.ingredients.substring(0, 50)}...)`).join('\n');
+    const listContext = shoppingList.map(i => `- ${i.item}`).join('\n') || '(Lista vacía)';
 
-  // Logic 2: Suggest Menu
-  if (lowerQuery.includes('menú') || lowerQuery.includes('sugerencia') || lowerQuery.includes('comer') || lowerQuery.includes('cenar')) {
-      const stmt = db.prepare('SELECT title FROM recipes ORDER BY RANDOM() LIMIT 3');
-      const recipes = stmt.all();
-      if (recipes.length > 0) {
-          const titles = recipes.map(r => r.title).join(', ');
-          return res.json({ answer: `Aquí tienes una sugerencia de menú basada en tus recetas: ${titles}.` });
-      }
-      return res.json({ answer: 'Aún no tienes recetas suficientes para sugerir un menú. ¡Crea algunas primero!' });
-  }
+    const systemPrompt = `
+Eres un asistente de cocina útil y amable para una aplicación de "Recetas Sin Gluten".
+Tu objetivo es ayudar al usuario a planificar sus comidas y organizar su lista de la compra.
 
-  // Logic 3: Recipe Search Question
-  if (lowerQuery.includes('tengo') || lowerQuery.includes('hacer')) {
-     const stmt = db.prepare('SELECT title FROM recipes');
-     const allRecipes = stmt.all();
-     // Simple search
-     const found = allRecipes.filter(r => lowerQuery.includes(r.title.toLowerCase()));
-     if (found.length > 0) {
-        return res.json({ answer: `Sí, tienes estas recetas relacionadas: ${found.map(f => f.title).join(', ')}.` });
-     }
-  }
+INFORMACIÓN ACTUAL:
+[Mis Recetas]:
+${recipesContext}
 
-  return res.json({ answer: 'No estoy seguro de entenderte. Prueba a pedirme "Sugiereme un menú" o "Añade manzanas a la lista".' });
+[Lista de la Compra]:
+${listContext}
+
+INSTRUCCIONES CLAVE:
+1. Si el usuario te pide AÑADIR algo a la lista, responde con el texto normal y añade al final una línea oculta así: "ACTION: ADD <item>".
+2. Si el usuario te pide SUGERIR un menú, usa las recetas disponibles.
+3. Responde siempre en español, de forma concisa y amigable.
+4. Si el usuario te pregunta por recetas que TIENE, busca en [Mis Recetas].
+    `;
+
+    // 2. Call Ollama
+    const response = await axios.post('http://localhost:11434/api/chat', {
+        model: 'phi3',
+        messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: query }
+        ],
+        stream: false
+    });
+
+    const llmOutput = response.data.message.content;
+    
+    // 3. Parse Actions
+    let finalAnswer = llmOutput;
+    let actionTaken = false;
+
+    // Regex for ACTION: ADD <item>
+    const actionRegex = /ACTION: ADD (.*)/i;
+    const match = llmOutput.match(actionRegex);
+
+    if (match && match[1]) {
+        const itemToAdd = match[1].trim();
+        // Execute DB Action
+        const stmt = db.prepare('INSERT INTO shopping_list (item) VALUES (?)');
+        stmt.run(itemToAdd);
+        
+        // Clean up the output so the user doesn't see the raw action code if possible, 
+        // OR leave it if we want to debug. Let's strip it for cleaner UI.
+        finalAnswer = finalAnswer.replace(match[0], '').trim();
+        actionTaken = true;
+    }
+
+    res.json({ answer: finalAnswer, action: actionTaken ? 'item_added' : null });
+
+  } catch (error) {
+    console.error('Ollama Error:', error.message);
+    // Fallback if Ollama is down
+    if (error.code === 'ECONNREFUSED') {
+        res.json({ answer: 'No puedo conectar con mi cerebro (Ollama). Asegúrate de tener OLLAMA ejecutándose en tu ordenador.' });
+    } else {
+        res.json({ answer: 'Tuve un error al procesar tu solicitud. Inténtalo de nuevo.' });
+    }
+  }
 });
 
 app.listen(PORT, () => {
